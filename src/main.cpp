@@ -1,6 +1,7 @@
 #include "helpers/help.h"
 #include "helpers/utils.h"
 #include "helpers/daemonizer.h"
+#include "helpers/macro.h"
 #include "classes/Keyboard.h"
 
 int main(int argc, char **argv) {
@@ -60,6 +61,7 @@ int main(int argc, char **argv) {
 		else if (arg == "--help-effects") {help::effects(argv[0]); return 0;}
 		else if (arg == "--help-samples") {help::samples(argv[0]); return 0;}
 		else if (argc > (argIndex + 1) && arg == "--daemon" ) {daemonizer::start(argv[0], argv[argIndex + 1]); return 0;}
+		else if (arg == "--daemon" ) {daemonizer::start(argv[0]); return 0;}
 
 		//Initialize the device for use
 		if (!kbd.open(vendorID, productID, serial)) {
