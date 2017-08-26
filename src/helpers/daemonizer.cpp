@@ -7,14 +7,25 @@
 #include <iostream>
 #include <signal.h>
 #include <string.h>
+#include <iomanip>
+#include <locale>
 #include <fstream>
 #include <sstream>
 #include <string> 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <linux/uinput.h>
+#include <fcntl.h>
 
 #include "utils.h"
+#include "vboard.h"
 #include "../classes/Keyboard.h"
 
 #define BLINK_DELAY 10000 // TODO: MAKE REAL TIME TESTED
+
+std::array<std::array<std::array<int, 50>, 9>, 3> my_macros ;
+std::vector<int> record_buff;
+vboard *fake_board;
 
 namespace daemonizer {
 	
@@ -50,10 +61,11 @@ namespace daemonizer {
 		signal(SIGTTIN,SIG_IGN);		
 		//signal(SIGINT, stop);
 		
+		fake_board = new vboard();
+		
 		LedKeyboard kbd;
 		kbd.open();
-		std::cout<<"Starting Daemon"<<std::endl;
-		utils::setGKeysMode(kbd, "1");
+		std::cout<<"Started Daemon"<<std::endl;
 		start_macros(kbd);
 		
 		bool do_file_proc = true;
@@ -74,6 +86,7 @@ namespace daemonizer {
 		exit(signum);
 	}
 	*/
+	
 	void process(LedKeyboard &kbd, std::string scenarioFile) {
 		static bool fileChanged = false;
 		static std::string parsedFileString = "";
@@ -118,8 +131,7 @@ namespace daemonizer {
 		}
 		
 		std::istringstream parsedFile(parsedFileString);
-		utils::parseProfile(kbd, parsedFile);
-		
+		utils::parseProfile(kbd, parsedFile);		
 	}
 	
 	int start_macros(LedKeyboard &kbd) {
@@ -151,8 +163,10 @@ namespace daemonizer {
 		hid_set_nonblocking(handle0, 1);
 		hid_set_nonblocking(handle1, 1);
 		
+		utils::setGKeysMode(kbd, "1");
 		setMNKey(handle1, kbd, "1");
 		setMRKey(handle1, kbd, "0");
+		
 		return 0;
 	}
 	
@@ -161,56 +175,80 @@ namespace daemonizer {
 		static int res0, res1;
 		static char blink_state = 0, record_macro = 0, last_m_keys_pressed = 0, current_m_key = 1;
 		static unsigned long blink_count;
+		static unsigned char runCounts = 0;
 		// TODO: Make each profile have it's own macros.
 		// TODO: Store profiles
 		res0 = hid_read(handle0, buf0, sizeof(buf0));
 		res1 = hid_read(handle1, buf1, sizeof(buf1));	
 
 		if (record_macro > 0 && res0 > 0) {
-			//record_buff.add(buf0);
+			record_buff.push_back(buf0[2]);
 		}
 		else if (res0 < 0) {
 			std::cout<<"hid_read() returned error\n"<<std::endl;
 		}
 		
 		if (res1 > 0) {
-			if (buf1[2] == 0x08 && buf1[4]) {
+			if (buf1[2] == 0x08 && (buf1[4] || buf1[5])) {
 				if (record_macro == -1) {
+					int buf_tmp = buf1[5] * 256 + buf1[4];
 					for (int i = 0; i < 9; i++) {
-						if ((buf1[4] >> i) & 1) {
+						if (!((buf_tmp >> i) ^ 1)) {
 							record_macro = i + 1;
-							blink_count = BLINK_DELAY;
+							blink_count = 0;
+							blink_state = 1;
+							break;
 						}
 					}
 				}
 				else if (record_macro > 0) {
-					//record_buff.removeAll();
+					record_buff.clear();
 					record_macro = 0;
 					setMRKey(handle1, kbd, "0");
 				}
 				else {
-					//macro_play(buf1[4], buf1[5]);
+					int buf_tmp = buf1[5] * 256 + buf1[4];
+					int i_tmp = 0;
+					for (int i = 0; i < 9; i++) {
+						if (!((buf_tmp >> i) ^ 1)) {
+							i_tmp = i + 1;
+							blink_count = 0;
+							blink_state = 1;
+							break;
+						}
+					}
+					for (int i = 0; i < 50; i++)
+					{
+						fake_board->print(my_macros[current_m_key - 1][i_tmp][i]);
+						printf("iprinting %c\n", my_macros[current_m_key - 1][i_tmp][i] + 61);
+					}
+					std::cout<<std::endl;
+					//macro_play(current_m_key, buf_tmp >> i);
 				}
 			}
 			else if (buf1[2] == 0x09) {
 				if (record_macro) {
-					//record_buff.removeAll();
+					record_buff.clear();
 					record_macro = 0;
 					setMRKey(handle1, kbd, "0");
 				}
-				else 
-					std::cout<<"Not 1\n"<<std::endl;
 				if (!last_m_keys_pressed != !buf1[4]) {
 					if (buf1[4] == 1 || buf1[4] == 2 || buf1[4] == 4) {
-						current_m_key = buf1[4];
+						int buf_tmp = buf1[4];
+						int i_tmp = 0;
+						for (int i = 0; i < 3; i++) {
+							if (!((buf_tmp >> i) ^ 1)) {
+								i_tmp = i + 1;
+								blink_count = 0;
+								blink_state = 1;
+								break;
+							}
+						}
+						current_m_key = i_tmp;
 						setMNKey(handle1, kbd, std::to_string(buf1[4]));
 					}
 					last_m_keys_pressed = buf1[4];
 				}
-				else 
-					std::cout<<"Not 2\n"<<std::endl;
-				std::cout<<std::to_string(last_m_keys_pressed)<< std::endl;
-				std::cout<<std::to_string(current_m_key)<< std::endl;
 			}
 			else if ((buf1[2] == 0x0a) && buf1[4])
 			{
@@ -219,13 +257,24 @@ namespace daemonizer {
 					setMRKey(handle1, kbd, "1");
 				}
 				else if (record_macro > 0) {
-					//save_macro(record_macro, macro_buff);
+					std::cout<<std::to_string(record_macro)<< std::endl;
+					
+					int i_tmp = 0;
+					for (int i = 0; i < 3; i++) {
+						if (!((buf1[4] >> i) ^ 1)) {
+							i_tmp = i;
+							break;
+						}
+					}
+					for (unsigned int j = 0; j < record_buff.size(); j++) {
+						my_macros[i_tmp][record_macro][j] = record_buff[j];
+						printf("got %d\n", record_buff[j]);
+					}
 					record_macro = 0;
 					setMRKey(handle1, kbd, "0");
 				}
 				else {
-					std::cout<<std::to_string(record_macro)<< std::endl;
-					//record_buff.removeAll();
+					record_buff.clear();
 					record_macro = 0;
 					setMRKey(handle1, kbd, "0");
 				}
@@ -234,37 +283,39 @@ namespace daemonizer {
 		else if (res1 < 0) {
 			std::cout<<"hid_read() returned error\n"<<std::endl;
 		}
-		else if (record_macro > 0) {
+		if (record_macro > 0) {
 			if (blink_count == 0 ) {
 				blink_count = BLINK_DELAY;
-				setMRKey(handle1, kbd, std::to_string(blink_state));
 				blink_state = blink_state ? 0 : 1;
+				setMRKey(handle1, kbd, std::to_string(blink_state));
 			}
 			else {
 				blink_count --;
 			}
+		}
+		
+		if (runCounts < 256) {	// Init messes with keys scanning. This just makes sure everything's in the right state so that the first M-key press isn't missed.
+			runCounts++;
+			last_m_keys_pressed = 0;
+			current_m_key = 1;
 		}
 		return 0;
 	}
 	
 	void setMNKey(hid_device *handle, LedKeyboard &kbd, std::string value) {
 		static unsigned char buf[256];
-		static int res;
 		utils::setMNKey(kbd, value);
 		hid_set_nonblocking(handle, 0);
-		res = hid_read(handle, buf, sizeof(buf));	
+		hid_read(handle, buf, sizeof(buf));	
 		hid_set_nonblocking(handle, 1);
-		res = hid_read(handle, buf, sizeof(buf));	
 	}
 	
 	void setMRKey(hid_device *handle, LedKeyboard &kbd, std::string value) {
 		static unsigned char buf[256];
-		static int res;
 		utils::setMRKey(kbd, value);
 		hid_set_nonblocking(handle, 0);
-		res = hid_read(handle, buf, sizeof(buf));	
+		hid_read(handle, buf, sizeof(buf));	
 		hid_set_nonblocking(handle, 1);
-		res = hid_read(handle, buf, sizeof(buf));	
 	}
 }
 
